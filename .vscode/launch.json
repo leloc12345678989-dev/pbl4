@@ -1,0 +1,29 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "pbl4 WinForms UI",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/src/UI/bin/Debug/net8.0-windows/pbl4.UI.dll",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "stopAtEntry": false
+    },
+    {
+      "name": "pbl4 Benchmark",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/src/Benchmark/bin/Debug/net8.0/pbl4.Benchmark.dll",
+      "args": [
+        "https://speed.hetzner.de/100MB.bin",
+        "benchmark-results"
+      ],
+      "cwd": "${workspaceFolder}",
+      "stopAtEntry": false
+    }
+  ]
+}
+

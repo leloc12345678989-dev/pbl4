@@ -1,0 +1,15 @@
+bin/
+obj/
+.vs/
+.vscode/.vs/
+TestResults/
+*.user
+*.suo
+*.db
+*.db-shm
+*.db-wal
+*.part
+*.tmp
+downloads/
+benchmark-results/
+

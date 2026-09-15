@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>12</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Core\pbl4.Core.csproj" />
+    <ProjectReference Include="..\Networking\pbl4.Networking.csproj" />
+    <ProjectReference Include="..\OSIntegration\pbl4.OSIntegration.csproj" />
+    <ProjectReference Include="..\Persistence\pbl4.Persistence.csproj" />
+  </ItemGroup>
+</Project>
+

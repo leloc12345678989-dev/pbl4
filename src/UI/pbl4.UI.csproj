@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>12</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Core\pbl4.Core.csproj" />
+    <ProjectReference Include="..\Networking\pbl4.Networking.csproj" />
+    <ProjectReference Include="..\OSIntegration\pbl4.OSIntegration.csproj" />
+    <ProjectReference Include="..\Persistence\pbl4.Persistence.csproj" />
+  </ItemGroup>
+</Project>
