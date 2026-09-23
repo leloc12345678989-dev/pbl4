@@ -13,6 +13,8 @@ public sealed class DownloadItemViewModel : INotifyPropertyChanged
     private double _speedBytesPerSecond;
     private int _activeSegments;
     private string _message = "";
+    private DateTimeOffset? _startedAt;
+    private DateTimeOffset? _finishedAt;
 
     public Guid Id { get; init; }
 
@@ -86,6 +88,47 @@ public sealed class DownloadItemViewModel : INotifyPropertyChanged
 
     public string SpeedText => $"{FormatBytes((long)SpeedBytesPerSecond)}/s";
 
+    public DateTimeOffset? StartedAt
+    {
+        get => _startedAt;
+        set
+        {
+            if (SetField(ref _startedAt, value))
+            {
+                OnPropertyChanged(nameof(ElapsedText));
+            }
+        }
+    }
+
+    public DateTimeOffset? FinishedAt
+    {
+        get => _finishedAt;
+        set
+        {
+            if (SetField(ref _finishedAt, value))
+            {
+                OnPropertyChanged(nameof(ElapsedText));
+            }
+        }
+    }
+
+    public string ElapsedText
+    {
+        get
+        {
+            if (StartedAt is null)
+            {
+                return "";
+            }
+
+            var end = FinishedAt ?? DateTimeOffset.UtcNow;
+            var elapsed = end - StartedAt.Value;
+            return elapsed.TotalHours >= 1
+                ? elapsed.ToString(@"hh\:mm\:ss")
+                : elapsed.ToString(@"mm\:ss\.f");
+        }
+    }
+
     public event PropertyChangedEventHandler? PropertyChanged;
 
     public void ApplyProgress(DownloadProgressSnapshot progress)
@@ -97,6 +140,17 @@ public sealed class DownloadItemViewModel : INotifyPropertyChanged
         SpeedBytesPerSecond = progress.SpeedBytesPerSecond;
         ActiveSegments = progress.ActiveSegments;
         Message = progress.Message;
+        if (StartedAt is null && progress.State is DownloadState.Running)
+        {
+            StartedAt = progress.Timestamp;
+        }
+
+        if (progress.State is DownloadState.Completed or DownloadState.Failed or DownloadState.Canceled)
+        {
+            FinishedAt ??= progress.Timestamp;
+        }
+
+        OnPropertyChanged(nameof(ElapsedText));
     }
 
     private bool SetField<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)

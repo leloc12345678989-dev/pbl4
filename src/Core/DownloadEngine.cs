@@ -254,6 +254,7 @@ public sealed class DownloadEngine
             return;
         }
 
+        var lastProgressPublish = DateTimeOffset.MinValue;
         await using var writeStream = new SegmentFileWriteStream(
             writer,
             start,
@@ -262,7 +263,12 @@ public sealed class DownloadEngine
             {
                 segment.AddProgress(bytesWritten);
                 speedMeter.Add(bytesWritten);
-                Publish(job, speedMeter.BytesPerSecond, $"Dang tai segment {segment.Index}.", activeSegmentCount());
+                var now = DateTimeOffset.UtcNow;
+                if (now - lastProgressPublish >= TimeSpan.FromMilliseconds(250))
+                {
+                    lastProgressPublish = now;
+                    Publish(job, speedMeter.BytesPerSecond, $"Dang tai segment {segment.Index}.", activeSegmentCount());
+                }
             },
             cancellationToken);
 
@@ -274,6 +280,7 @@ public sealed class DownloadEngine
         }
 
         await _repository.UpdateSegmentAsync(job.Id, segment, cancellationToken);
+        Publish(job, speedMeter.BytesPerSecond, $"Segment {segment.Index} hoan tat.", activeSegmentCount());
     }
 
     private async Task<DownloadJob> LoadJobOrThrowAsync(Guid jobId, CancellationToken cancellationToken)

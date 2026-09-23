@@ -11,6 +11,7 @@ public sealed class MainForm : Form
     private readonly BindingList<DownloadItemViewModel> _downloads = [];
     private readonly BindingSource _bindingSource = new();
     private readonly Dictionary<Guid, CancellationTokenSource> _eventSubscriptions = new();
+    private readonly Dictionary<Guid, DateTimeOffset> _lastUiLogAt = new();
     private readonly SqliteDownloadRepository _repository;
     private readonly ProgressReporter _progressReporter = new();
     private readonly DownloadEngine _engine;
@@ -22,6 +23,10 @@ public sealed class MainForm : Form
     private readonly Label _statusLabel = new() { AutoSize = true, Text = "Engine local: ready" };
     private readonly DataGridView _grid = new() { Dock = DockStyle.Fill, AutoGenerateColumns = false, ReadOnly = true, AllowUserToAddRows = false };
     private readonly ListBox _logListBox = new() { Dock = DockStyle.Fill, Font = new Font("Consolas", 9) };
+    private readonly Button _startButton = new();
+    private readonly Button _pauseButton = new();
+    private readonly Button _resumeButton = new();
+    private readonly Button _cancelButton = new();
 
     public MainForm()
     {
@@ -80,19 +85,24 @@ public sealed class MainForm : Form
         inputPanel.Controls.Add(CreateLabeledControl("Threads", _segmentsInput), 2, 0);
         inputPanel.Controls.Add(CreateLabeledControl("Limit KB/s", _limitInput), 3, 0);
 
-        var startButton = new Button { Text = "Tai", Dock = DockStyle.Fill, Height = 34, Margin = new Padding(8, 28, 4, 8) };
-        startButton.Click += async (_, _) => await StartAsync();
-        inputPanel.Controls.Add(startButton, 4, 0);
+        ConfigureButton(_startButton, "Tai xuong", async () => await StartAsync(), width: 112);
+        _startButton.Dock = DockStyle.Fill;
+        _startButton.Height = 34;
+        _startButton.Margin = new Padding(8, 28, 4, 8);
+        inputPanel.Controls.Add(_startButton, 4, 0);
 
         var commandPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight };
         root.Controls.Add(commandPanel, 0, 1);
-        commandPanel.Controls.Add(CreateCommandButton("Refresh", async () => await RefreshAsync()));
-        commandPanel.Controls.Add(CreateCommandButton("Pause", async () => await PauseSelectedAsync()));
-        commandPanel.Controls.Add(CreateCommandButton("Resume", async () => await ResumeSelectedAsync()));
-        commandPanel.Controls.Add(CreateCommandButton("Cancel", async () => await CancelSelectedAsync()));
+        ConfigureButton(_pauseButton, "Tam dung", async () => await PauseSelectedAsync());
+        ConfigureButton(_resumeButton, "Tiep tuc", async () => await ResumeSelectedAsync());
+        ConfigureButton(_cancelButton, "Huy", async () => await CancelSelectedAsync());
+        commandPanel.Controls.Add(_pauseButton);
+        commandPanel.Controls.Add(_resumeButton);
+        commandPanel.Controls.Add(_cancelButton);
         commandPanel.Controls.Add(_statusLabel);
 
         ConfigureGrid();
+        UpdateCommandButtons();
         root.Controls.Add(_grid, 0, 2);
 
         var logPanel = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2 };
@@ -174,11 +184,13 @@ public sealed class MainForm : Form
         return "download.bin";
     }
 
-    private static Button CreateCommandButton(string text, Func<Task> action)
+    private static void ConfigureButton(Button button, string text, Func<Task> action, int width = 96)
     {
-        var button = new Button { Text = text, Width = 92, Height = 30, Margin = new Padding(0, 4, 8, 4) };
+        button.Text = text;
+        button.Width = width;
+        button.Height = 30;
+        button.Margin = new Padding(0, 4, 8, 4);
         button.Click += async (_, _) => await action();
-        return button;
     }
 
     private void ConfigureGrid()
@@ -186,10 +198,12 @@ public sealed class MainForm : Form
         _grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
         _grid.MultiSelect = false;
         _grid.RowHeadersVisible = false;
+        _grid.SelectionChanged += (_, _) => UpdateCommandButtons();
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "State", DataPropertyName = nameof(DownloadItemViewModel.State), Width = 90 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "File", DataPropertyName = nameof(DownloadItemViewModel.OutputPath), Width = 240 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Downloaded", DataPropertyName = nameof(DownloadItemViewModel.DownloadedText), Width = 160 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Progress %", DataPropertyName = nameof(DownloadItemViewModel.ProgressPercent), Width = 90 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Time", DataPropertyName = nameof(DownloadItemViewModel.ElapsedText), Width = 90 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Speed", DataPropertyName = nameof(DownloadItemViewModel.SpeedText), Width = 110 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Active", DataPropertyName = nameof(DownloadItemViewModel.ActiveSegments), Width = 80 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Segments", DataPropertyName = nameof(DownloadItemViewModel.SegmentCount), Width = 80 });
@@ -206,12 +220,22 @@ public sealed class MainForm : Form
                 return;
             }
 
-            var outputPath = Path.GetFullPath(_outputTextBox.Text.Trim());
+            var rawOutputPath = _outputTextBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(rawOutputPath))
+            {
+                MessageBox.Show(this, "Hay chon noi luu file truoc khi tai.", "pbl4", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            var outputPath = Path.GetFullPath(rawOutputPath);
             var bandwidthLimit = _limitInput.Value > 0 ? (long?)_limitInput.Value * 1024 : null;
             var job = await _engine.CreateAsync(new pbl4.Core.CreateDownloadRequest(url, outputPath, (int)_segmentsInput.Value, bandwidthLimit));
             var item = ToViewModel(job);
+            item.StartedAt = DateTimeOffset.UtcNow;
             _downloads.Insert(0, item);
+            _bindingSource.Position = 0;
             SubscribeToEvents(item.Id);
+            UpdateCommandButtons();
             AddLog($"Created {item.Id} - {item.OutputPath}");
 
             _ = Task.Run(async () =>
@@ -238,10 +262,11 @@ public sealed class MainForm : Form
         try
         {
             var jobs = await _engine.ListAsync();
+            var refreshedItems = jobs.Select(ToViewModel).ToList();
+
             _downloads.Clear();
-            foreach (var job in jobs)
+            foreach (var item in refreshedItems)
             {
-                var item = ToViewModel(job);
                 _downloads.Add(item);
                 if (item.State is "Running" or "Pending" or "Paused")
                 {
@@ -250,6 +275,8 @@ public sealed class MainForm : Form
             }
 
             _statusLabel.Text = $"Engine local: ready - {_downloads.Count} job(s)";
+            UpdateCommandButtons();
+            AddLog($"Tai lai danh sach: {_downloads.Count} job(s).");
         }
         catch (Exception ex)
         {
@@ -263,6 +290,9 @@ public sealed class MainForm : Form
         var item = SelectedItem();
         if (item is null) return;
         await _engine.PauseAsync(item.Id);
+        item.State = DownloadState.Paused.ToString();
+        _bindingSource.ResetBindings(false);
+        UpdateCommandButtons();
         AddLog($"Pause requested: {item.Id}");
     }
 
@@ -272,6 +302,9 @@ public sealed class MainForm : Form
         if (item is null) return;
         SubscribeToEvents(item.Id);
         _ = Task.Run(async () => await _engine.ResumeAsync(item.Id));
+        item.State = DownloadState.Running.ToString();
+        _bindingSource.ResetBindings(false);
+        UpdateCommandButtons();
         AddLog($"Resume requested: {item.Id}");
     }
 
@@ -280,6 +313,9 @@ public sealed class MainForm : Form
         var item = SelectedItem();
         if (item is null) return;
         await _engine.CancelAsync(item.Id);
+        item.State = DownloadState.Canceled.ToString();
+        _bindingSource.ResetBindings(false);
+        UpdateCommandButtons();
         AddLog($"Cancel requested: {item.Id}");
     }
 
@@ -309,7 +345,8 @@ public sealed class MainForm : Form
                         if (item is null) return;
                         item.ApplyProgress(progress);
                         _bindingSource.ResetBindings(false);
-                        AddLog($"{progress.JobId}: {progress.State} {progress.ProgressPercent:0.##}% - {progress.Message}");
+                        UpdateCommandButtons();
+                        AddProgressLog(progress);
                     });
 
                     if (progress.State is DownloadState.Completed or DownloadState.Failed or DownloadState.Canceled)
@@ -351,6 +388,33 @@ public sealed class MainForm : Form
         {
             _logListBox.Items.RemoveAt(_logListBox.Items.Count - 1);
         }
+    }
+
+    private void AddProgressLog(DownloadProgressSnapshot progress)
+    {
+        var important = progress.State is DownloadState.Completed or DownloadState.Failed or DownloadState.Canceled or DownloadState.Paused
+                        || progress.ProgressPercent >= 100
+                        || progress.Message.Contains("retry", StringComparison.OrdinalIgnoreCase);
+
+        var now = DateTimeOffset.UtcNow;
+        if (!important &&
+            _lastUiLogAt.TryGetValue(progress.JobId, out var lastLog) &&
+            now - lastLog < TimeSpan.FromSeconds(2))
+        {
+            return;
+        }
+
+        _lastUiLogAt[progress.JobId] = now;
+        AddLog($"{progress.JobId}: {progress.State} {progress.ProgressPercent:0.##}% - {progress.Message}");
+    }
+
+    private void UpdateCommandButtons()
+    {
+        var item = SelectedItem();
+        var state = item?.State;
+        _pauseButton.Enabled = state == DownloadState.Running.ToString();
+        _resumeButton.Enabled = state is "Paused" or "Failed";
+        _cancelButton.Enabled = state is "Pending" or "Running" or "Paused" or "Failed";
     }
 
     private void DisposeSubscriptions()
