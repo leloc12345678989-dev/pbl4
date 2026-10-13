@@ -298,7 +298,9 @@ public sealed class SqliteDownloadRepository : IDownloadRepository
             row.TotalBytes,
             segments,
             row.State,
-            row.RequestedConcurrency);
+            row.RequestedConcurrency,
+            row.CreatedAt,
+            row.UpdatedAt);
 
     private readonly record struct JobRow(
         Guid Id,

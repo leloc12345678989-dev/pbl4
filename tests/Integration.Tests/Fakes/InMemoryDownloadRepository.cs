@@ -7,6 +7,9 @@ internal sealed class InMemoryDownloadRepository : IDownloadRepository
 {
     private readonly ConcurrentDictionary<Guid, DownloadJob> _jobs = new();
 
+    public Task InitializeAsync(CancellationToken cancellationToken = default)
+        => Task.CompletedTask;
+
     public Task SaveAsync(DownloadJob job, CancellationToken cancellationToken = default)
     {
         _jobs[job.Id] = Clone(job);
@@ -74,6 +77,7 @@ internal sealed class InMemoryDownloadRepository : IDownloadRepository
                 segment.DownloadedBytes,
                 segment.State)).ToList(),
             job.State,
-            job.RequestedConcurrency);
+            job.RequestedConcurrency,
+            job.CreatedAt,
+            job.UpdatedAt);
 }
-

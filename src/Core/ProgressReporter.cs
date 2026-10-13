@@ -28,10 +28,11 @@ public sealed class ProgressReporter
 
     public ChannelReader<DownloadProgressSnapshot> Subscribe(Guid jobId)
     {
-        var channel = Channel.CreateUnbounded<DownloadProgressSnapshot>(new UnboundedChannelOptions
+        var channel = Channel.CreateBounded<DownloadProgressSnapshot>(new BoundedChannelOptions(64)
         {
             SingleReader = true,
-            SingleWriter = false
+            SingleWriter = false,
+            FullMode = BoundedChannelFullMode.DropOldest
         });
 
         var channels = _subscribers.GetOrAdd(jobId, _ => new List<Channel<DownloadProgressSnapshot>>());
@@ -43,4 +44,3 @@ public sealed class ProgressReporter
         return channel.Reader;
     }
 }
-

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Net;
 using System.Threading.Channels;
 using pbl4.Networking;
 using pbl4.OSIntegration;
@@ -174,6 +175,11 @@ public sealed class DownloadEngine
                 .Where(segment => segment.State != SegmentState.Completed && segment.RemainingBytes > 0)
                 .Select(segment => threadPool.RunAsync(async token =>
                 {
+                    if (segment.Index > 0)
+                    {
+                        await Task.Delay(TimeSpan.FromMilliseconds(segment.Index * 700), token);
+                    }
+
                     Interlocked.Increment(ref activeSegments);
                     try
                     {
@@ -225,8 +231,8 @@ public sealed class DownloadEngine
             catch (Exception ex) when (ex is not OperationCanceledException && attempt < _options.MaxRetryAttempts)
             {
                 attempt++;
-                var delay = TimeSpan.FromMilliseconds(_options.InitialRetryDelay.TotalMilliseconds * Math.Pow(2, attempt - 1));
-                Publish(job, speedMeter.BytesPerSecond, $"Segment {segment.Index} loi, retry lan {attempt}: {ex.Message}");
+                var delay = GetRetryDelay(ex, attempt);
+                Publish(job, speedMeter.BytesPerSecond, $"Segment #{segment.Index + 1} loi, retry lan {attempt} sau {delay.TotalSeconds:0}s: {ex.Message}");
                 await Task.Delay(delay, cancellationToken);
             }
             catch
@@ -255,6 +261,26 @@ public sealed class DownloadEngine
         }
 
         var lastProgressPublish = DateTimeOffset.MinValue;
+        var progressLock = new object();
+        var lastBytesAt = DateTimeOffset.UtcNow;
+        var lowSpeedWindowStartedAt = lastBytesAt;
+        var lowSpeedWindowBytes = 0L;
+        using var segmentCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var watchdogTask = WatchSegmentProgressAsync(
+            job,
+            segment,
+            limiter,
+            speedMeter,
+            activeSegmentCount,
+            segmentCts,
+            () =>
+            {
+                lock (progressLock)
+                {
+                    return new SegmentTransferMetrics(lastBytesAt, lowSpeedWindowStartedAt, lowSpeedWindowBytes);
+                }
+            });
+
         await using var writeStream = new SegmentFileWriteStream(
             writer,
             start,
@@ -264,15 +290,39 @@ public sealed class DownloadEngine
                 segment.AddProgress(bytesWritten);
                 speedMeter.Add(bytesWritten);
                 var now = DateTimeOffset.UtcNow;
+                lock (progressLock)
+                {
+                    lastBytesAt = now;
+                    lowSpeedWindowBytes += bytesWritten;
+                }
+
                 if (now - lastProgressPublish >= TimeSpan.FromMilliseconds(250))
                 {
                     lastProgressPublish = now;
-                    Publish(job, speedMeter.BytesPerSecond, $"Dang tai segment {segment.Index}.", activeSegmentCount());
+                    Publish(job, speedMeter.BytesPerSecond, $"Dang tai segment #{segment.Index + 1}.", activeSegmentCount());
                 }
             },
-            cancellationToken);
+            segmentCts.Token);
 
-        await _httpClient.DownloadRangeAsync(job.Url, start, segment.End, writeStream, cancellationToken);
+        try
+        {
+            await _httpClient.DownloadRangeAsync(job.Url, start, segment.End, writeStream, segmentCts.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && segmentCts.IsCancellationRequested)
+        {
+            throw new TimeoutException($"Segment #{segment.Index + 1} bi dung hoac qua cham, thu ket noi lai.");
+        }
+        finally
+        {
+            await segmentCts.CancelAsync();
+            try
+            {
+                await watchdogTask;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
 
         if (segment.RemainingBytes == 0)
         {
@@ -280,7 +330,50 @@ public sealed class DownloadEngine
         }
 
         await _repository.UpdateSegmentAsync(job.Id, segment, cancellationToken);
-        Publish(job, speedMeter.BytesPerSecond, $"Segment {segment.Index} hoan tat.", activeSegmentCount());
+        Publish(job, speedMeter.BytesPerSecond, $"Segment #{segment.Index + 1} hoan tat.", activeSegmentCount());
+    }
+
+    private async Task WatchSegmentProgressAsync(
+        DownloadJob job,
+        DownloadSegment segment,
+        TokenBucketRateLimiter? limiter,
+        SpeedMeter speedMeter,
+        Func<int> activeSegmentCount,
+        CancellationTokenSource segmentCts,
+        Func<SegmentTransferMetrics> readMetrics)
+    {
+        while (!segmentCts.IsCancellationRequested)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(5), segmentCts.Token);
+
+            var now = DateTimeOffset.UtcNow;
+            var metrics = readMetrics();
+            if (now - metrics.LastBytesAt >= _options.SegmentIdleTimeout)
+            {
+                Publish(job, speedMeter.BytesPerSecond, $"Segment #{segment.Index + 1} khong nhan du lieu, retry.", activeSegmentCount());
+                await segmentCts.CancelAsync();
+                return;
+            }
+
+            if (limiter is not null || _options.MinimumSegmentBytesPerSecond <= 0)
+            {
+                continue;
+            }
+
+            var window = now - metrics.LowSpeedWindowStartedAt;
+            if (window < _options.SegmentLowSpeedWindow)
+            {
+                continue;
+            }
+
+            var bytesPerSecond = metrics.LowSpeedWindowBytes / Math.Max(1, window.TotalSeconds);
+            if (bytesPerSecond < _options.MinimumSegmentBytesPerSecond)
+            {
+                Publish(job, speedMeter.BytesPerSecond, $"Segment #{segment.Index + 1} qua cham ({FormatBytesPerSecond(bytesPerSecond)}), retry.", activeSegmentCount());
+                await segmentCts.CancelAsync();
+                return;
+            }
+        }
     }
 
     private async Task<DownloadJob> LoadJobOrThrowAsync(Guid jobId, CancellationToken cancellationToken)
@@ -297,9 +390,37 @@ public sealed class DownloadEngine
             job.ProgressPercent,
             speedBytesPerSecond,
             activeSegments,
+            job.Segments
+                .Select(segment => new SegmentProgressSnapshot(
+                    segment.Index,
+                    segment.DownloadedBytes,
+                    segment.Length,
+                    segment.Length <= 0 ? 0 : segment.DownloadedBytes * 100.0 / segment.Length,
+                    segment.State))
+                .ToArray(),
             message,
             DateTimeOffset.UtcNow));
     }
+
+    private static string FormatBytesPerSecond(double bytesPerSecond)
+        => bytesPerSecond >= 1024 * 1024
+            ? $"{bytesPerSecond / 1024 / 1024:0.##} MB/s"
+            : $"{bytesPerSecond / 1024:0.##} KB/s";
+
+    private TimeSpan GetRetryDelay(Exception exception, int attempt)
+    {
+        if (exception is HttpRangeRequestException { StatusCode: HttpStatusCode.TooManyRequests } rangeException)
+        {
+            return rangeException.RetryAfter ?? TimeSpan.FromSeconds(Math.Min(60, 10 * attempt));
+        }
+
+        return TimeSpan.FromMilliseconds(_options.InitialRetryDelay.TotalMilliseconds * Math.Pow(2, attempt - 1));
+    }
+
+    private readonly record struct SegmentTransferMetrics(
+        DateTimeOffset LastBytesAt,
+        DateTimeOffset LowSpeedWindowStartedAt,
+        long LowSpeedWindowBytes);
 
     private sealed class SpeedMeter
     {

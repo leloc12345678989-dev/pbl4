@@ -54,7 +54,7 @@ Ung dung la desktop local app. Khong can web public, khong can server trung gian
 Chay benchmark:
 
 ```powershell
-.\scripts\benchmark.ps1 -Url "https://speed.hetzner.de/100MB.bin"
+.\scripts\benchmark.ps1 -Url "http://speedtest.tele2.net/100MB.zip"
 ```
 
 Ket qua:
@@ -77,4 +77,3 @@ Huong phat trien:
 - Adaptive concurrency theo toc do mang.
 - Checksum file.
 - MSIX/installer de cai nhu ung dung Windows that.
-

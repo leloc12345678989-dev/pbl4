@@ -8,6 +8,13 @@ public sealed record DownloadProgressSnapshot(
     double ProgressPercent,
     double SpeedBytesPerSecond,
     int ActiveSegments,
+    IReadOnlyList<SegmentProgressSnapshot> Segments,
     string Message,
     DateTimeOffset Timestamp);
 
+public sealed record SegmentProgressSnapshot(
+    int Index,
+    long DownloadedBytes,
+    long TotalBytes,
+    double ProgressPercent,
+    SegmentState State);

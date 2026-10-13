@@ -1,4 +1,6 @@
 using System.ComponentModel;
+using System.Net.Http;
+using System.Net.Sockets;
 using pbl4.Core;
 using pbl4.Networking;
 using pbl4.OSIntegration;
@@ -8,20 +10,34 @@ namespace pbl4.UI;
 
 public sealed class MainForm : Form
 {
+    private static readonly string[] DemoDownloadUrls =
+    [
+        "http://speedtest.tele2.net/100MB.zip",
+        "http://speedtest.tele2.net/1GB.zip",
+        "http://speedtest.tele2.net/10MB.zip",
+        "https://speedtest.singapore.linode.com/100MB-singapore.bin",
+        "https://speedtest.dallas.linode.com/100MB-dallas.bin",
+        "https://speedtest.newark.linode.com/100MB-newark.bin",
+        "https://proof.ovh.net/files/100Mb.dat"
+    ];
+
     private readonly BindingList<DownloadItemViewModel> _downloads = [];
     private readonly BindingSource _bindingSource = new();
+    private readonly Dictionary<Guid, DownloadItemViewModel> _downloadById = new();
     private readonly Dictionary<Guid, CancellationTokenSource> _eventSubscriptions = new();
     private readonly Dictionary<Guid, DateTimeOffset> _lastUiLogAt = new();
-    private readonly SqliteDownloadRepository _repository;
+    private readonly Dictionary<Guid, DateTimeOffset> _lastUiProgressAt = new();
+    private readonly object _uiThrottleLock = new();
+    private readonly IDownloadRepository _repository;
     private readonly ProgressReporter _progressReporter = new();
     private readonly DownloadEngine _engine;
 
-    private readonly TextBox _urlTextBox = new() { Text = "https://speed.hetzner.de/100MB.bin" };
-    private readonly TextBox _outputTextBox = new() { Text = "downloads\\100MB.bin" };
+    private readonly ComboBox _urlTextBox = new() { DropDownStyle = ComboBoxStyle.DropDown, AutoCompleteMode = AutoCompleteMode.SuggestAppend, AutoCompleteSource = AutoCompleteSource.ListItems };
+    private readonly TextBox _outputTextBox = new() { Text = "downloads\\100MB.zip" };
     private readonly NumericUpDown _segmentsInput = new() { Minimum = 1, Maximum = 8, Value = 4 };
     private readonly NumericUpDown _limitInput = new() { Minimum = 0, Maximum = 1024 * 1024, Value = 0, Increment = 128 };
     private readonly Label _statusLabel = new() { AutoSize = true, Text = "Engine local: ready" };
-    private readonly DataGridView _grid = new() { Dock = DockStyle.Fill, AutoGenerateColumns = false, ReadOnly = true, AllowUserToAddRows = false };
+    private readonly DataGridView _grid = new BufferedDataGridView { Dock = DockStyle.Fill, AutoGenerateColumns = false, ReadOnly = true, AllowUserToAddRows = false };
     private readonly ListBox _logListBox = new() { Dock = DockStyle.Fill, Font = new Font("Consolas", 9) };
     private readonly Button _startButton = new();
     private readonly Button _pauseButton = new();
@@ -35,15 +51,22 @@ public sealed class MainForm : Form
         Height = 720;
         MinimumSize = new Size(960, 600);
         StartPosition = FormStartPosition.CenterScreen;
+        ConfigureUrlPresets();
 
-        var dbPath = Path.Combine(AppContext.BaseDirectory, "data", "pbl4-downloads.db");
-        _repository = new SqliteDownloadRepository(dbPath);
+        _repository = BuildRepository();
         _engine = new DownloadEngine(
-            new HttpRangeClient(new HttpRangeClientOptions { BufferSize = 1024 * 1024 }),
+            new HttpRangeClient(new HttpRangeClientOptions { BufferSize = 1024 * 1024, MaxConnectionsPerServer = 8 }),
             new SegmentPlanner(),
             _repository,
             _progressReporter,
-            new DownloadEngineOptions { DefaultConcurrency = 4, MaxConcurrency = 8, BufferSize = 1024 * 1024 });
+            new DownloadEngineOptions
+            {
+                DefaultConcurrency = 4,
+                MaxConcurrency = 8,
+                BufferSize = 1024 * 1024,
+                MaxRetryAttempts = 10,
+                InitialRetryDelay = TimeSpan.FromSeconds(2)
+            });
 
         BuildLayout();
         _bindingSource.DataSource = _downloads;
@@ -53,8 +76,22 @@ public sealed class MainForm : Form
     protected override async void OnLoad(EventArgs e)
     {
         base.OnLoad(e);
-        await _repository.InitializeAsync();
-        await RefreshAsync();
+        try
+        {
+            await _repository.InitializeAsync();
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            _statusLabel.Text = "SQL Server: connection error";
+            AddLog($"SQL Server failed: {ex.Message}");
+            MessageBox.Show(
+                this,
+                $"Khong ket noi duoc SQL Server.\n\n{ex.Message}",
+                "pbl4",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
     }
 
     protected override void OnFormClosed(FormClosedEventArgs e)
@@ -193,11 +230,50 @@ public sealed class MainForm : Form
         button.Click += async (_, _) => await action();
     }
 
+    private void ConfigureUrlPresets()
+    {
+        _urlTextBox.Items.AddRange(DemoDownloadUrls);
+        _urlTextBox.Text = DemoDownloadUrls[0];
+    }
+
+    private static IDownloadRepository BuildRepository()
+    {
+        var provider = Environment.GetEnvironmentVariable("PBL4_REPOSITORY");
+        if (provider?.Equals("sqlserver", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            return new SqlServerDownloadRepository(BuildSqlServerConnectionString());
+        }
+
+        var configuredPath = Environment.GetEnvironmentVariable("PBL4_SQLITE_PATH");
+        var databasePath = string.IsNullOrWhiteSpace(configuredPath)
+            ? Path.Combine(AppContext.BaseDirectory, "pbl4-downloads.db")
+            : configuredPath;
+
+        return new SqliteDownloadRepository(databasePath);
+    }
+
+    private static string BuildSqlServerConnectionString()
+    {
+        var configured = Environment.GetEnvironmentVariable("PBL4_SQLSERVER_CONNECTION_STRING");
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            return configured;
+        }
+
+        return "Server=.;Database=pbl4_downloads;Trusted_Connection=True;Encrypt=False;TrustServerCertificate=True;";
+    }
+
     private void ConfigureGrid()
     {
         _grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
         _grid.MultiSelect = false;
         _grid.RowHeadersVisible = false;
+        _grid.AllowUserToResizeRows = false;
+        _grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None;
+        _grid.AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.None;
+        _grid.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
+        _grid.DefaultCellStyle.WrapMode = DataGridViewTriState.False;
+        _grid.ShowCellToolTips = true;
         _grid.SelectionChanged += (_, _) => UpdateCommandButtons();
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "State", DataPropertyName = nameof(DownloadItemViewModel.State), Width = 90 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "File", DataPropertyName = nameof(DownloadItemViewModel.OutputPath), Width = 240 });
@@ -207,6 +283,7 @@ public sealed class MainForm : Form
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Speed", DataPropertyName = nameof(DownloadItemViewModel.SpeedText), Width = 110 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Active", DataPropertyName = nameof(DownloadItemViewModel.ActiveSegments), Width = 80 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Segments", DataPropertyName = nameof(DownloadItemViewModel.SegmentCount), Width = 80 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Threads", DataPropertyName = nameof(DownloadItemViewModel.ThreadStatusText), Width = 280 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Message", DataPropertyName = nameof(DownloadItemViewModel.Message), AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
     }
 
@@ -232,7 +309,7 @@ public sealed class MainForm : Form
             var job = await _engine.CreateAsync(new pbl4.Core.CreateDownloadRequest(url, outputPath, (int)_segmentsInput.Value, bandwidthLimit));
             var item = ToViewModel(job);
             item.StartedAt = DateTimeOffset.UtcNow;
-            _downloads.Insert(0, item);
+            AddDownloadItem(item, insertAtTop: true);
             _bindingSource.Position = 0;
             SubscribeToEvents(item.Id);
             UpdateCommandButtons();
@@ -252,8 +329,9 @@ public sealed class MainForm : Form
         }
         catch (Exception ex)
         {
-            AddLog($"Start failed: {ex.Message}");
-            MessageBox.Show(this, ex.Message, "pbl4", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            var message = BuildStartErrorMessage(ex);
+            AddLog($"Start failed: {message}");
+            MessageBox.Show(this, message, "pbl4", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -262,13 +340,26 @@ public sealed class MainForm : Form
         try
         {
             var jobs = await _engine.ListAsync();
-            var refreshedItems = jobs.Select(ToViewModel).ToList();
+            var refreshedItems = new List<DownloadItemViewModel>(jobs.Count);
+            foreach (var job in jobs)
+            {
+                var item = ToViewModel(job);
+                if (job.State is DownloadState.Running)
+                {
+                    await _repository.UpdateJobStateAsync(job.Id, DownloadState.Paused);
+                    item.State = DownloadState.Paused.ToString();
+                    item.Message = "Da tam dung sau khi mo lai app.";
+                }
 
+                refreshedItems.Add(item);
+            }
+
+            _downloadById.Clear();
             _downloads.Clear();
             foreach (var item in refreshedItems)
             {
-                _downloads.Add(item);
-                if (item.State is "Running" or "Pending" or "Paused")
+                AddDownloadItem(item, insertAtTop: false);
+                if (item.State is "Running")
                 {
                     SubscribeToEvents(item.Id);
                 }
@@ -291,7 +382,6 @@ public sealed class MainForm : Form
         if (item is null) return;
         await _engine.PauseAsync(item.Id);
         item.State = DownloadState.Paused.ToString();
-        _bindingSource.ResetBindings(false);
         UpdateCommandButtons();
         AddLog($"Pause requested: {item.Id}");
     }
@@ -303,7 +393,6 @@ public sealed class MainForm : Form
         SubscribeToEvents(item.Id);
         _ = Task.Run(async () => await _engine.ResumeAsync(item.Id));
         item.State = DownloadState.Running.ToString();
-        _bindingSource.ResetBindings(false);
         UpdateCommandButtons();
         AddLog($"Resume requested: {item.Id}");
     }
@@ -314,7 +403,6 @@ public sealed class MainForm : Form
         if (item is null) return;
         await _engine.CancelAsync(item.Id);
         item.State = DownloadState.Canceled.ToString();
-        _bindingSource.ResetBindings(false);
         UpdateCommandButtons();
         AddLog($"Cancel requested: {item.Id}");
     }
@@ -339,12 +427,19 @@ public sealed class MainForm : Form
                 var reader = _engine.Subscribe(jobId);
                 await foreach (var progress in reader.ReadAllAsync(cts.Token))
                 {
+                    if (!ShouldUpdateUi(progress))
+                    {
+                        continue;
+                    }
+
                     BeginInvoke(() =>
                     {
-                        var item = _downloads.FirstOrDefault(download => download.Id == progress.JobId);
-                        if (item is null) return;
+                        if (!_downloadById.TryGetValue(progress.JobId, out var item))
+                        {
+                            return;
+                        }
+
                         item.ApplyProgress(progress);
-                        _bindingSource.ResetBindings(false);
                         UpdateCommandButtons();
                         AddProgressLog(progress);
                     });
@@ -361,6 +456,8 @@ public sealed class MainForm : Form
             finally
             {
                 _eventSubscriptions.Remove(jobId);
+                _lastUiLogAt.Remove(jobId);
+                _lastUiProgressAt.Remove(jobId);
                 cts.Dispose();
             }
         });
@@ -378,15 +475,35 @@ public sealed class MainForm : Form
             State = job.State.ToString(),
             SegmentCount = job.Segments.Count,
             ActiveSegments = 0,
+            ThreadStatusText = FormatInitialSegmentStatus(job.Segments),
             Message = ""
         };
 
+    private static string BuildStartErrorMessage(Exception ex)
+    {
+        if (ex is HttpRequestException { InnerException: SocketException socketException } &&
+            socketException.SocketErrorCode is SocketError.HostNotFound or SocketError.NoData)
+        {
+            return "Khong phan giai duoc ten mien cua URL. Hay kiem tra mang/DNS hoac thu URL khac, vi app chua ket noi duoc toi server tai file.";
+        }
+
+        return ex.Message;
+    }
+
     private void AddLog(string message)
     {
-        _logListBox.Items.Insert(0, $"{DateTime.Now:HH:mm:ss} {message}");
-        while (_logListBox.Items.Count > 200)
+        _logListBox.BeginUpdate();
+        try
         {
-            _logListBox.Items.RemoveAt(_logListBox.Items.Count - 1);
+            _logListBox.Items.Insert(0, $"{DateTime.Now:HH:mm:ss} {message}");
+            while (_logListBox.Items.Count > 200)
+            {
+                _logListBox.Items.RemoveAt(_logListBox.Items.Count - 1);
+            }
+        }
+        finally
+        {
+            _logListBox.EndUpdate();
         }
     }
 
@@ -408,6 +525,46 @@ public sealed class MainForm : Form
         AddLog($"{progress.JobId}: {progress.State} {progress.ProgressPercent:0.##}% - {progress.Message}");
     }
 
+    private bool ShouldUpdateUi(DownloadProgressSnapshot progress)
+    {
+        var important = progress.State is DownloadState.Completed or DownloadState.Failed or DownloadState.Canceled or DownloadState.Paused
+                        || progress.ProgressPercent >= 100
+                        || progress.Message.Contains("retry", StringComparison.OrdinalIgnoreCase);
+
+        if (important)
+        {
+            return true;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        lock (_uiThrottleLock)
+        {
+            if (_lastUiProgressAt.TryGetValue(progress.JobId, out var lastUpdate) &&
+                now - lastUpdate < TimeSpan.FromMilliseconds(200))
+            {
+                return false;
+            }
+
+            _lastUiProgressAt[progress.JobId] = now;
+            return true;
+        }
+    }
+
+    private static string FormatInitialSegmentStatus(IReadOnlyList<DownloadSegment> segments)
+        => string.Join(" | ", segments.Select(segment =>
+        {
+            var state = segment.State switch
+            {
+                SegmentState.Running => "R",
+                SegmentState.Completed => "OK",
+                SegmentState.Failed => "ERR",
+                _ => "..."
+            };
+
+            var percent = segment.Length <= 0 ? 0 : segment.DownloadedBytes * 100.0 / segment.Length;
+            return $"#{segment.Index + 1} {state} {percent:0}%";
+        }));
+
     private void UpdateCommandButtons()
     {
         var item = SelectedItem();
@@ -415,6 +572,18 @@ public sealed class MainForm : Form
         _pauseButton.Enabled = state == DownloadState.Running.ToString();
         _resumeButton.Enabled = state is "Paused" or "Failed";
         _cancelButton.Enabled = state is "Pending" or "Running" or "Paused" or "Failed";
+    }
+
+    private void AddDownloadItem(DownloadItemViewModel item, bool insertAtTop)
+    {
+        _downloadById[item.Id] = item;
+        if (insertAtTop)
+        {
+            _downloads.Insert(0, item);
+            return;
+        }
+
+        _downloads.Add(item);
     }
 
     private void DisposeSubscriptions()
@@ -426,5 +595,14 @@ public sealed class MainForm : Form
         }
 
         _eventSubscriptions.Clear();
+    }
+
+    private sealed class BufferedDataGridView : DataGridView
+    {
+        public BufferedDataGridView()
+        {
+            DoubleBuffered = true;
+            ResizeRedraw = true;
+        }
     }
 }

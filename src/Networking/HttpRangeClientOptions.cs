@@ -8,7 +8,9 @@ public sealed class HttpRangeClientOptions
 
     public TimeSpan Timeout { get; init; } = TimeSpan.FromSeconds(60);
 
-    public Version HttpVersion { get; init; } = System.Net.HttpVersion.Version20;
+    public Version HttpVersion { get; init; } = System.Net.HttpVersion.Version11;
 
     public int BufferSize { get; init; } = 1024 * 1024;
+
+    public int MaxConnectionsPerServer { get; init; } = 8;
 }

@@ -2,6 +2,8 @@ namespace pbl4.Core;
 
 public interface IDownloadRepository
 {
+    Task InitializeAsync(CancellationToken cancellationToken = default);
+
     Task SaveAsync(DownloadJob job, CancellationToken cancellationToken = default);
 
     Task<DownloadJob?> FindAsync(Guid jobId, CancellationToken cancellationToken = default);
@@ -12,4 +14,3 @@ public interface IDownloadRepository
 
     Task UpdateSegmentAsync(Guid jobId, DownloadSegment segment, CancellationToken cancellationToken = default);
 }
-

@@ -19,6 +19,7 @@ public sealed class HttpRangeClient : IHttpRangeClient, IDisposable
             AutomaticDecompression = DecompressionMethods.None,
             Proxy = _options.Proxy,
             UseProxy = _options.Proxy is not null,
+            MaxConnectionsPerServer = _options.MaxConnectionsPerServer,
             SslOptions =
             {
                 // Minh hoa HTTPS/TLS: chi cho phep TLS 1.2/1.3, tranh cac protocol cu.
@@ -42,11 +43,7 @@ public sealed class HttpRangeClient : IHttpRangeClient, IDisposable
 
     public async Task<HttpRangeProbeResult> ProbeAsync(Uri url, CancellationToken cancellationToken = default)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Head, url)
-        {
-            Version = _options.HttpVersion,
-            VersionPolicy = HttpVersionPolicy.RequestVersionOrLower
-        };
+        using var request = CreateRequest(HttpMethod.Head, url);
 
         using var response = await _httpClient.SendAsync(
             request,
@@ -55,18 +52,79 @@ public sealed class HttpRangeClient : IHttpRangeClient, IDisposable
 
         response.EnsureSuccessStatusCode();
 
-        var supportsRanges = response.Headers.AcceptRanges.Any(
-            value => value.Equals("bytes", StringComparison.OrdinalIgnoreCase));
+        var supportsRanges = HasAcceptRangesBytes(response);
+        var contentLength = response.Content.Headers.ContentLength;
+
+        if (supportsRanges && contentLength is > 0)
+        {
+            return ToProbeResult(url, supportsRanges, contentLength, response);
+        }
+
+        return await ProbeWithSingleByteRangeAsync(url, response, cancellationToken);
+    }
+
+    private async Task<HttpRangeProbeResult> ProbeWithSingleByteRangeAsync(
+        Uri url,
+        HttpResponseMessage headResponse,
+        CancellationToken cancellationToken)
+    {
+        using var request = CreateRequest(HttpMethod.Get, url);
+        request.Headers.Range = new RangeHeaderValue(0, 0);
+
+        using var response = await _httpClient.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead,
+            cancellationToken);
+
+        response.EnsureSuccessStatusCode();
+
+        var contentLength = response.Content.Headers.ContentLength;
+        var supportsRanges = HasAcceptRangesBytes(headResponse) || HasAcceptRangesBytes(response);
+
+        if (response.StatusCode == HttpStatusCode.PartialContent)
+        {
+            supportsRanges = true;
+            if (response.Content.Headers.ContentRange is not null &&
+                HttpRangeParser.TryParseContentRange(response.Content.Headers.ContentRange.ToString(), out var parsedRange))
+            {
+                contentLength = parsedRange.TotalLength;
+            }
+        }
 
         return new HttpRangeProbeResult(
             url,
             supportsRanges,
-            response.Content.Headers.ContentLength,
+            contentLength ?? headResponse.Content.Headers.ContentLength,
+            response.Headers.ETag?.Tag ?? headResponse.Headers.ETag?.Tag,
+            response.Content.Headers.LastModified ?? headResponse.Content.Headers.LastModified,
+            response.Content.Headers.ContentType?.MediaType ?? headResponse.Content.Headers.ContentType?.MediaType,
+            response.Version);
+    }
+
+    private HttpRequestMessage CreateRequest(HttpMethod method, Uri url)
+    {
+        var request = new HttpRequestMessage(method, url)
+        {
+            Version = _options.HttpVersion,
+            VersionPolicy = HttpVersionPolicy.RequestVersionOrLower
+        };
+        request.Headers.UserAgent.ParseAdd("pbl4-download-accelerator/1.0");
+        return request;
+    }
+
+    private static bool HasAcceptRangesBytes(HttpResponseMessage response)
+        => response.Headers.AcceptRanges.Any(
+            value => value.Equals("bytes", StringComparison.OrdinalIgnoreCase));
+
+    private static HttpRangeProbeResult ToProbeResult(Uri url, bool supportsRanges, long? contentLength, HttpResponseMessage response)
+        => new(
+            url,
+            supportsRanges,
+            contentLength,
             response.Headers.ETag?.Tag,
             response.Content.Headers.LastModified,
             response.Content.Headers.ContentType?.MediaType,
             response.Version);
-    }
 
     public async Task<HttpRangeResponse> DownloadRangeAsync(
         Uri url,
@@ -98,8 +156,11 @@ public sealed class HttpRangeClient : IHttpRangeClient, IDisposable
 
         if (response.StatusCode != HttpStatusCode.PartialContent)
         {
-            throw new InvalidOperationException(
-                $"Server khong tra 206 Partial Content cho Range bytes={start}-{end}. Status: {(int)response.StatusCode}.");
+            throw new HttpRangeRequestException(
+                response.StatusCode,
+                start,
+                end,
+                response.Headers.RetryAfter?.Delta);
         }
 
         ParsedContentRange? parsedRange = null;
@@ -147,4 +208,3 @@ public sealed class HttpRangeClient : IHttpRangeClient, IDisposable
         }
     }
 }
-

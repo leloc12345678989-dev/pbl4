@@ -12,7 +12,9 @@ public sealed class DownloadJob
         long totalBytes,
         IReadOnlyList<DownloadSegment> segments,
         DownloadState state = DownloadState.Pending,
-        int requestedConcurrency = 4)
+        int requestedConcurrency = 4,
+        DateTimeOffset? createdAt = null,
+        DateTimeOffset? updatedAt = null)
     {
         Id = id == Guid.Empty ? Guid.NewGuid() : id;
         Url = url;
@@ -21,8 +23,8 @@ public sealed class DownloadJob
         _segments = segments.ToList();
         State = state;
         RequestedConcurrency = requestedConcurrency;
-        CreatedAt = DateTimeOffset.UtcNow;
-        UpdatedAt = CreatedAt;
+        CreatedAt = createdAt ?? DateTimeOffset.UtcNow;
+        UpdatedAt = updatedAt ?? CreatedAt;
     }
 
     public Guid Id { get; }
@@ -100,4 +102,3 @@ public sealed class DownloadJob
         };
     }
 }
-

@@ -21,6 +21,7 @@ public sealed class SqliteDownloadRepositoryTests
         File.Delete(path);
         Assert.NotNull(loaded);
         Assert.Equal(job.Id, loaded.Id);
+        Assert.Equal(job.CreatedAt, loaded.CreatedAt);
         Assert.Equal(25, loaded.Segments[0].DownloadedBytes);
         Assert.Equal(2, loaded.Segments.Count);
     }
@@ -78,4 +79,3 @@ public sealed class SqliteDownloadRepositoryTests
     private static string CreateTempDbPath()
         => Path.Combine(Path.GetTempPath(), $"pbl4-{Guid.NewGuid():N}.db");
 }
-

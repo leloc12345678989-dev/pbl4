@@ -12,6 +12,7 @@ public sealed class DownloadItemViewModel : INotifyPropertyChanged
     private long _totalBytes;
     private double _speedBytesPerSecond;
     private int _activeSegments;
+    private string _segmentStatusText = "";
     private string _message = "";
     private DateTimeOffset? _startedAt;
     private DateTimeOffset? _finishedAt;
@@ -78,6 +79,12 @@ public sealed class DownloadItemViewModel : INotifyPropertyChanged
         set => SetField(ref _activeSegments, value);
     }
 
+    public string ThreadStatusText
+    {
+        get => _segmentStatusText;
+        set => SetField(ref _segmentStatusText, value);
+    }
+
     public string Message
     {
         get => _message;
@@ -139,6 +146,7 @@ public sealed class DownloadItemViewModel : INotifyPropertyChanged
         ProgressPercent = Math.Round(progress.ProgressPercent, 2);
         SpeedBytesPerSecond = progress.SpeedBytesPerSecond;
         ActiveSegments = progress.ActiveSegments;
+        ThreadStatusText = FormatSegmentStatus(progress.Segments);
         Message = progress.Message;
         if (StartedAt is null && progress.State is DownloadState.Running)
         {
@@ -180,5 +188,26 @@ public sealed class DownloadItemViewModel : INotifyPropertyChanged
         }
 
         return $"{value:0.##} {units[unit]}";
+    }
+
+    private static string FormatSegmentStatus(IReadOnlyList<SegmentProgressSnapshot> segments)
+    {
+        if (segments.Count == 0)
+        {
+            return "";
+        }
+
+        return string.Join(" | ", segments.Select(segment =>
+        {
+            var state = segment.State switch
+            {
+                SegmentState.Running => "R",
+                SegmentState.Completed => "OK",
+                SegmentState.Failed => "ERR",
+                _ => "..."
+            };
+
+            return $"#{segment.Index + 1} {state} {segment.ProgressPercent:0}%";
+        }));
     }
 }

@@ -53,7 +53,7 @@ Noi:
 Chay benchmark:
 
 ```powershell
-.\scripts\benchmark.ps1 -Url "https://speed.hetzner.de/100MB.bin"
+.\scripts\benchmark.ps1 -Url "http://speedtest.tele2.net/100MB.zip"
 ```
 
 Noi:
@@ -81,4 +81,3 @@ La co che HTTP cho phep tai mot khoang byte cua file, vi du `Range: bytes=0-1023
 ### Deadlock duoc tranh nhu the nao?
 
 Khong giu lock khi network I/O, gioi han critical section, dung timeout voi semaphore/lock va cancellation token cho pause/cancel.
-

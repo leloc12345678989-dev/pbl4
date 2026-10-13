@@ -8,7 +8,8 @@ Huong trien khai: **WinForms desktop app**, tai truc tiep tren may nguoi dung. K
 
 - C# .NET 8
 - WinForms desktop UI
-- SQLite de luu metadata resume
+- SQLite de luu metadata resume mac dinh
+- SQL Server tuy chon neu muon demo DB rieng
 - xUnit cho unit test va integration test
 
 ## Diem hoc thuat chinh
@@ -67,10 +68,37 @@ cd C:\Users\ADMIN\Documents\Codex\2026-09-14\role-b-n-l-m-t\pbl4
 .\scripts\run-ui.ps1
 ```
 
+## Luu metadata
+
+Mac dinh UI dung SQLite tai thu muc output cua app nen co the chay ngay, khong can tao database truoc. Neu muon doi file SQLite:
+
+```powershell
+$env:PBL4_SQLITE_PATH="C:\data\pbl4-downloads.db"
+.\scripts\run-ui.ps1
+```
+
+## SQL Server tuy chon
+
+Project van ho tro SQL Server qua package `Microsoft.Data.SqlClient` trong `src/Persistence/pbl4.Persistence.csproj`. Tao database `pbl4_downloads` trong SSMS truoc, app se tu tao/kiem tra cac bang `downloads` va `segments` khi chay.
+
+Connection string mac dinh:
+
+```text
+Server=.;Database=pbl4_downloads;Trusted_Connection=True;Encrypt=False;TrustServerCertificate=True;
+```
+
+Neu may dung ten server khac, set bien moi truong `PBL4_SQLSERVER_CONNECTION_STRING` truoc khi chay app:
+
+```powershell
+$env:PBL4_REPOSITORY="sqlserver"
+$env:PBL4_SQLSERVER_CONNECTION_STRING="Server=DESKTOP-K647TQ4;Database=pbl4_downloads;Trusted_Connection=True;Encrypt=False;TrustServerCertificate=True;"
+.\scripts\run-ui.ps1
+```
+
 ## Benchmark
 
 ```powershell
-.\scripts\benchmark.ps1 -Url "https://speed.hetzner.de/100MB.bin"
+.\scripts\benchmark.ps1 -Url "http://speedtest.tele2.net/100MB.zip"
 ```
 
 Ket qua xuat ra:
@@ -88,3 +116,16 @@ dotnet test .\pbl4.sln --no-build --no-restore
 
 Project khong dung aria2 hay download manager co san. Engine tu cai dat probe Range, chia segment, ghi offset, resume, retry, throttle va progress reporting.
 
+## Link demo tai nhieu luong
+
+Nen dung cac URL co `Content-Length` va `Accept-Ranges: bytes`:
+
+```text
+http://speedtest.tele2.net/100MB.zip
+http://speedtest.tele2.net/1GB.zip
+https://speedtest.singapore.linode.com/100MB-singapore.bin
+https://speedtest.dallas.linode.com/100MB-dallas.bin
+https://speedtest.newark.linode.com/100MB-newark.bin
+```
+
+Neu server tra `429 Too Many Requests`, giam Threads xuong 2-3 hoac doi server khac trong danh sach.
